@@ -1,8 +1,21 @@
-# dsh-loop-guard — DSH 思考循环守护
+﻿# dsh-loop-guard-trim — DSH 思考循环守护（带尾巴裁剪）
 
 > 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）提供的思考循环守护插件：模型陷入「只想不做」的退化循环时自动打断，不必再手动中止
 
 **🌏 中文 | [English](README_EN.md)**
+
+## 关于本 fork
+
+本包是 [`dsh-loop-guard`](https://github.com/MrWeiCodes/dsh-loop-guard) 的修改版，原作者为 **argszero、MrWeiCodes 及贡献者**，依 **MIT 许可证**使用与再分发。原项目的完整功能均予保留，本 fork 只做增量。
+
+与原版相比，本 fork 增加了：
+
+1. **尾巴裁剪**（`trimRepeatedTail`）——切断时把重复的尾巴从写入上下文的块里删掉，让退化内容根本不进入历史；
+2. **可配置提示文案**（`correctionTemplate` / `trimNoticeTemplate`）——纠正提示与裁剪说明可自定义。
+
+安装与配置方式完全兼容原版，把包名换成 `@kongbaige010/dsh-loop-guard-trim` 即可。详细变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+> ⚠️ 本 fork 与原作者无隶属关系，问题请提到本包而非上游项目。
 
 `dsh` · `dsh-plugin` · `plugin` · `guard` · `thinking-loop` · `reasoning` · `repetition` · `AI agent` · `思考循环` · `死循环` · `推理退化`
 
@@ -100,12 +113,12 @@
 
 ### 方式一：让 AI 安装（最简单）
 
-把本仓库地址告诉 DSH 的 AI 助手即可，例如：「安装 https://github.com/MrWeiCodes/dsh-loop-guard 这个插件」。AI 会替你完成插件装载、依赖与补丁处理；之后重启 `dsh web`。
+把本仓库地址告诉 DSH 的 AI 助手即可，例如：「安装 https://github.com/Kongbaige010/dsh-loop-guard-trim 这个插件」。AI 会替你完成插件装载、依赖与补丁处理；之后重启 `dsh web`。
 
 ### 方式二：从 GitHub 安装
 
 ```powershell
-dsh plugin --profile web add -w github:MrWeiCodes/dsh-loop-guard
+dsh plugin --profile web add -w github:Kongbaige010/dsh-loop-guard-trim
 ```
 
 从 GitHub 装的是源码，`lib/` 需要现场编译，所以**装完可能需要在 profile 的 `pnpm-workspace.yaml` 里放行构建脚本**（pnpm 10 起默认阻止依赖执行构建脚本，按它打印的提示把那一行粘进去再重跑即可）。
@@ -120,7 +133,7 @@ dsh plugin --profile web add -w github:MrWeiCodes/dsh-loop-guard
    ```powershell
    # 示例：web profile
    $dst = "$HOME\.dsh\profiles\web\packages\dsh-loop-guard"
-   git clone https://github.com/MrWeiCodes/dsh-loop-guard.git $dst
+   git clone https://github.com/Kongbaige010/dsh-loop-guard-trim.git $dst
    cd $dst
    npm install      # 同时编译出 lib/
    npm run build    # 如上一步未生成 lib/，单独执行
@@ -137,12 +150,12 @@ dsh plugin --profile web add -w github:MrWeiCodes/dsh-loop-guard
 - **方式一（AI 安装）的**：直接告诉 AI「更新 dsh-loop-guard 插件」即可。
 - **方式二（GitHub 安装）的**：
   ```powershell
-  dsh plugin --profile web add -w github:MrWeiCodes/dsh-loop-guard
+  dsh plugin --profile web add -w github:Kongbaige010/dsh-loop-guard-trim
   ```
   若没有拉到最新提交（git 依赖有缓存），先移除再重新添加：
   ```powershell
   dsh plugin --profile web remove dsh-loop-guard
-  dsh plugin --profile web add -w github:MrWeiCodes/dsh-loop-guard
+  dsh plugin --profile web add -w github:Kongbaige010/dsh-loop-guard-trim
   ```
   然后重启 `dsh web`。**更新到新提交后 commit 号会变**，若 pnpm 再次要求放行构建，按方式二的说明重做一次即可。
 - **方式三（手动）安装的**：
@@ -227,8 +240,47 @@ interface Config {
   breakCorrection?: boolean
   /** 切断后等回合收尾，不等你发话就自动续跑。默认 false。 */
   resumeAfterBreak?: boolean
+
+  // ── 尾巴裁剪与提示文案（本 fork 新增） ────────────────────
+  /** 切断前把重复的尾巴从要写入上下文的块里删掉。默认 true。 */
+  trimRepeatedTail?: boolean
+  /** 自定义纠正提示。空 = 用内置文案。占位符 {what} / {chars} / {trimmed}。 */
+  correctionTemplate?: string
+  /** 自定义裁剪说明。空 = 用内置文案。同上占位符；只在真发生裁剪时追加。 */
+  trimNoticeTemplate?: string
 }
 ```
+
+### 尾巴裁剪（`trimRepeatedTail`）
+
+切断时，插件会把**检测器报告的那段重复**从即将写入上下文的块里删掉。
+
+为什么需要它：熔断路径用 `block-end` 关闭块，而 `block-end` 的载荷**优先于**已累积的增量——这是进入上下文的文本最后一次可改的机会。不裁的话，那段退化的重复会被提交进历史，续跑的模型又会把它读回去。
+
+裁剪量就是**检测器自己报告的数值**，不做二次推算：对周期类规则而言，那个数值本身就是周期尾巴的长度。
+
+两条安全保证：
+
+- **块永远不会被清空**。没有非空白文本的块对渲染层不可见，而全空的 `content` 数组正是历史上导致目标被撤回的形状。`MIN_TRIM_KEEP`（256）是裁剪后可保留内容的下限；低于它则整块提交并记一条警告。
+- **失败即放行**。任何异常都返回原文——守护程序绝不能成为会话中断的原因。
+
+### 自定义提示文案
+
+`correctionTemplate` 与 `trimNoticeTemplate` 是两个**互相独立**的部分，各自留空则各用各的内置文案：
+
+```yaml
+loop-guard:
+  correctionTemplate: "停！你的{what}重复了 {chars} 字符。"
+  trimNoticeTemplate: "（已裁掉 {trimmed} 字符）"
+```
+
+| 占位符 | 含义 |
+| --- | --- |
+| `{what}` | 重复的对象，跟随会话语言（`思考内容` / `可见输出`） |
+| `{chars}` | 检测器测到的重复量 |
+| `{trimmed}` | 实际裁掉的字符数 |
+
+模板**原样拼接**，所以裁剪说明若要与正文隔开，需自带前导空白。未知占位符原样保留，不会报错。裁剪说明只在真发生裁剪时追加。
 
 ### 常见需求（直接抄）
 

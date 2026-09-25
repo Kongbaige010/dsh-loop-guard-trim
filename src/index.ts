@@ -409,6 +409,32 @@ export interface Config {
    * degenerate history unchanged — the shape that produced the loop.
    */
   resumeAfterBreak?: boolean
+  /**
+   * Trim the trailing verbatim repetition off a block before committing it.
+   *
+   * The break path closes each open block with a `block-end` payload that wins
+   * over the accumulated deltas, so it is the last point at which the text that
+   * actually enters the context can be changed. Removing the detector's own
+   * measured tail keeps the degeneracy itself out of the history instead of
+   * leaving it there for the resumed turn to read back. Default `true`.
+   */
+  trimRepeatedTail?: boolean
+  /**
+   * Replace the built-in break correction with your own wording.
+   *
+   * Placeholders `{what}`, `{chars}` and `{trimmed}` are substituted; an empty
+   * string keeps the built-in text. See `fillTemplate` for the exact rules.
+   */
+  correctionTemplate?: string
+  /**
+   * Replace the trim notice appended after the correction.
+   *
+   * Same placeholders as {@link Config.correctionTemplate}. Appended verbatim
+   * only when a trim actually happened, so include your own leading whitespace
+   * if you want it separated from the correction. An empty string keeps the
+   * built-in sentence.
+   */
+  trimNoticeTemplate?: string
 }
 
 /** Resolved config: every field carries its validated default. */
@@ -432,6 +458,22 @@ export const Config: z<Config> = z.object({
   breakCode: z.string().default('REPETITIVE_OUTPUT'),
   breakCorrection: z.boolean().default(true),
   resumeAfterBreak: z.boolean().default(false),
+  /** Trim the trailing verbatim repetition off a block before committing it. */
+  trimRepeatedTail: z.boolean().default(true),
+  /**
+   * Replace the built-in break correction with your own wording.
+   *
+   * An empty string keeps the built-in text; otherwise `{what}`, `{chars}` and
+   * `{trimmed}` are substituted by `fillTemplate`.
+   */
+  correctionTemplate: z.string().default(''),
+  /**
+   * Replace the trim notice appended after the correction.
+   *
+   * An empty string keeps the built-in sentence. Appended verbatim only when a
+   * trim actually happened, so it owns its own leading whitespace.
+   */
+  trimNoticeTemplate: z.string().default(''),
 })
 
 export const name = 'loop-guard'
@@ -1251,6 +1293,10 @@ interface Strings {
    * @param chars - the repetition size, not the cut position.
    */
   breakSummary(what: string, chars: number): string
+  /** Collapsed-row summary when the committed block was also shortened. */
+  trimSummary(what: string, chars: number, trimmed: number): string
+  /** Appended to the correction so the model knows the repetition is gone. */
+  trimNotice(trimmed: number): string
 }
 
 const EN: Strings = {
@@ -1262,11 +1308,21 @@ const EN: Strings = {
     ? 'several long reasoning-only calls with no output'
     : 'several calls that restate the same reasoning without adding anything',
   correction: (what, chars) => `Your ${what} had repeated itself for ${chars} characters without progressing, `
-    + 'so the response was cut off mid-stream. Do not repeat it: carry on with the task you were working on.',
+    + 'so the response was cut off mid-stream.'
+    + '\nDo not repeat it, do not resume from the repetition, and do not continue the same output path.'
+    + '\nExactly one of these three things is allowed now; do it immediately, with no preamble:'
+    + '\n1. A tool is needed: emit the structured tool_call directly;'
+    + '\n2. The task is done: give the final answer directly;'
+    + '\n3. It cannot continue: output BLOCKED: <reason> and stop.'
+    + '\nNo natural-language preparation, transition, or self-nudging text.',
   stallSummary: (reason) => reason === 'reasoning-only'
     ? 'stalled: reasoning-only calls'
     : 'stalled: restated reasoning',
   breakSummary: (what, chars) => `cut a repeating ${what} at ${chars} chars`,
+  trimSummary: (what, chars, trimmed) => `cut a repeating ${what} at ${chars} chars, trimmed ${trimmed}`,
+  trimNotice: (trimmed) => `\nThe repeated tail (${trimmed} characters) was removed before this was committed, `
+    + 'so it is not in the conversation record.'
+    + '\nAbandon the current output path and start over. Do not resume from the repetition.',
 }
 
 const ZH: Strings = {
@@ -1279,14 +1335,24 @@ const ZH: Strings = {
   // The correction must send the model BACK to its task, not wrap it up. An
   // earlier wording ("state the conclusion once, briefly") read as "finish now"
   // and made the model abandon work in progress — the break ended the loop but
-  // also derailed the turn. The instruction is therefore only "stop repeating,
-  // carry on".
+  // also derailed the turn. The wording below is deliberately prescriptive: it
+  // forbids the whole preparation register (preamble, transition, self-nudging)
+  // that a looping model falls back into, and offers exactly three exits so
+  // there is no room to resume the degenerate path.
   correction: (what, chars) => `你的${what}已连续重复 ${chars} 个字符而没有进展，因此响应被中途截断。`
-    + '不要重复这段内容，继续完成你原本的任务。',
+    + '\n不要重复这段内容，不要从重复处继续，也不要继续原输出路径。'
+    + '\n现在只允许做以下三件事之一，立即执行，不要任何铺垫：'
+    + '\n1. 需要工具：直接输出结构化 tool_call；'
+    + '\n2. 任务已完成：直接输出最终答案；'
+    + '\n3. 无法继续：输出 BLOCKED: <原因> 并停止。'
+    + '\n禁止任何自然语言准备语、过渡语、自我催促语。',
   stallSummary: (reason) => reason === 'reasoning-only'
     ? '空转：仅思考无产出'
     : '空转：复述推理',
   breakSummary: (what, chars) => `已截断重复的${what}（${chars} 字符）`,
+  trimSummary: (what, chars, trimmed) => `已截断重复的${what}（${chars} 字符，并裁剪 ${trimmed} 字符）`,
+  trimNotice: (trimmed) => `\n重复的尾巴（${trimmed} 字符）已在写入上下文前被裁剪掉，因此它不在对话记录里。`
+    + '\n放弃当前输出路径，重新开始。不要从重复处继续。',
 }
 
 /** The strings for one language. */
@@ -1298,6 +1364,90 @@ function stringsFor(lang: 'zh' | 'en'): Strings {
 function whatFor(lang: 'zh' | 'en', rule: BreakRule): string {
   if (lang === 'zh') return rule === 'identical-chunks' || rule === 'repeating-cycle' ? '可见输出' : '思考内容'
   return rule === 'identical-chunks' || rule === 'repeating-cycle' ? 'visible output' : 'reasoning'
+}
+
+/**
+ * Floor on what a trimmed block may keep, so a trim can never empty it.
+ *
+ * A block carrying no non-whitespace text is invisible to `isVisibleChunk`, and
+ * an all-empty `content` array is the shape that historically made the
+ * conversation renderer withdraw a materialized target. Keeping a few repeated
+ * characters is far cheaper than committing a block the UI cannot render.
+ */
+const MIN_TRIM_KEEP = 256
+
+/**
+ * Strip the trailing verbatim repetition from a block about to be committed.
+ *
+ * The break path closes each open block with a `block-end` whose payload wins
+ * over the accumulated deltas, so this is the last point at which the text that
+ * actually enters the context can be changed.
+ *
+ * The amount removed is the detector's own figure — the repetition it measured
+ * at the tail of the call. For the cycle rule that figure IS the periodic tail
+ * span (measured equal to a fresh recomputation on every real firing), so there
+ * is nothing to re-derive: a loop was detected, and the tail goes.
+ *
+ * Fail-open by construction: any failure returns the original text, because a
+ * guard must never be the reason a session dies.
+ *
+ * @param text - the block text about to be committed.
+ * @param repeated - characters of repetition the detector measured.
+ * @param config - resolved plugin configuration.
+ * @param ctx - plugin context, for logging.
+ * @param blockType - `text` or `reasoning`, for the log line.
+ * @returns the text to commit and how many characters were removed from it.
+ */
+function trimRepeatedTail(
+  text: string,
+  repeated: number,
+  config: ResolvedConfig,
+  ctx: Context,
+  blockType: string,
+): { text: string; trimmed: number } {
+  const whole = { text, trimmed: 0 }
+  try {
+    // `=== false` rather than a falsy check: a hand-built config (as the test
+    // suite passes) may omit the field entirely, and an omitted field must mean
+    // "use the default", not "silently skip the trim".
+    if (config.trimRepeatedTail === false) return whole
+    if (typeof text !== 'string' || text.length === 0) return whole
+    if (typeof repeated !== 'number' || !(repeated > 0)) return whole
+    const keep = text.length - repeated
+    if (keep < MIN_TRIM_KEEP) {
+      ctx.logger.warn(
+        `dsh-loop-guard: repetition of ${repeated} chars found but trimming would leave ${keep} chars (< ${MIN_TRIM_KEEP}); committing the block whole (${blockType})`,
+      )
+      return whole
+    }
+    ctx.logger.warn(
+      `dsh-loop-guard: trimmed ${repeated} repeated tail chars from a ${blockType} block (${text.length} -> ${keep})`,
+    )
+    return { text: text.slice(0, keep), trimmed: repeated }
+  } catch (error) {
+    ctx.logger.warn(`dsh-loop-guard: tail trim failed; committing the block whole: ${String(error)}`)
+    return whole
+  }
+}
+
+/**
+ * Fill a user-supplied correction template.
+ *
+ * Placeholders are `{what}`, `{chars}` and `{trimmed}`. Substitution is a plain
+ * literal replacement rather than a regex, so a template is taken exactly as
+ * written and an unknown placeholder is left alone instead of throwing. `{what}`
+ * is the localized noun the built-in wording would have used, so a template
+ * still follows the session language for that one word.
+ *
+ * @param template - the configured template.
+ * @param vars - the placeholder values.
+ * @returns the filled text.
+ */
+function fillTemplate(template: string, vars: { what: string; chars: number; trimmed: number }): string {
+  return template
+    .split('{what}').join(vars.what)
+    .split('{chars}').join(String(vars.chars))
+    .split('{trimmed}').join(String(vars.trimmed))
 }
 
 /**
@@ -1415,23 +1565,68 @@ export function apply(ctx: Context, config: ResolvedConfig): void {
     const s = stringsFor(lang)
     const what = whatFor(lang, rule)
     ctx.logger.warn(`dsh-loop-guard: breaking a repetitive stream (${repeated} repeated chars, one call, rule: ${rule}, code: ${config.breakCode})`)
+    // The detector's figure measures the repetition at the tail of the call's
+    // accumulated text, so it applies to the LAST open block of that kind — that
+    // is where the tail sits. Applying it to every open block would remove
+    // `repeated` characters once per block.
+    const targetType = rule.startsWith('reasoning') ? 'reasoning' : 'text'
+    let target = -1
+    open.forEach((block, i) => {
+      if (block.blockType === targetType) target = i
+    })
+    // The two breakers always report the rule matching their own block type, so
+    // this cannot happen through the shipped paths. If it ever does, the trim
+    // would silently do nothing, so say so rather than commit noise quietly.
+    if (target === -1) {
+      ctx.logger.warn(
+        `dsh-loop-guard: rule ${rule} implies a ${targetType} block but none is open; committing without trimming`,
+      )
+    }
+    const closed = open.map((block, i) => ({
+      index: block.index,
+      blockType: block.blockType,
+      result:
+        i === target
+          ? trimRepeatedTail(block.text, repeated, config, ctx, block.blockType)
+          : { text: block.text, trimmed: 0 },
+    }))
+    const trimmed = closed.reduce((sum, entry) => sum + entry.result.trimmed, 0)
+    const summary = trimmed > 0 ? s.trimSummary(what, repeated, trimmed) : s.breakSummary(what, repeated)
+    // The correction and the trim notice are independent parts: each falls back
+    // to its own built-in wording, and the notice is appended only when a trim
+    // actually happened. A template is used verbatim, so it owns its own leading
+    // whitespace.
+    const vars = { what, chars: repeated, trimmed }
+    // Both templates are optional and may be absent entirely: `apply()` is
+    // legitimately called with a hand-built config (the test suite does exactly
+    // that), so a missing field must fall back to the built-in wording rather
+    // than reach `fillTemplate` as `undefined`.
+    const customCorrection = config.correctionTemplate
+    const customNotice = config.trimNoticeTemplate
+    const base =
+      typeof customCorrection === 'string' && customCorrection !== ''
+        ? fillTemplate(customCorrection, vars)
+        : s.correction(what, repeated)
+    const notice =
+      typeof customNotice === 'string' && customNotice !== '' ? fillTemplate(customNotice, vars) : s.trimNotice(trimmed)
+    const correction = trimmed > 0 ? base + notice : base
     if (config.breakCorrection) {
-      agent.steer(message(s.correction(what, repeated), 'notice', s.breakSummary(what, repeated)))
+      agent.steer(message(correction, 'notice', summary))
     }
     // Start waiting for the driver to return to `idle` BEFORE the terminal chunk
     // is yielded. The `whenIdle()` promise is captured here, synchronously, so
     // it observes this turn's completion; awaiting it later (from the break
     // path) would race the very wind-down it needs to follow.
-    if (config.resumeAfterBreak) scheduleResume(agent, s.correction(what, repeated), s.breakSummary(what, repeated))
+    if (config.resumeAfterBreak) scheduleResume(agent, correction, summary)
     const out: StreamChunk[] = []
-    for (const block of open) {
+    for (const entry of closed) {
       // `block-end` wins over the accumulated deltas (`BlockAssembler.assemble`
       // returns `partial.block` when set), so this payload is what the committed
       // message carries.
       out.push({
         type: 'block-end',
-        index: block.index,
-        block: { type: block.blockType, text: block.text } as never,
+        index: entry.index,
+        block: { type: entry.blockType, text: entry.result.text } as never,
       })
     }
     out.push({ type: 'finish', reason: { kind: 'stop' } })

@@ -1,5 +1,11 @@
-node_modules/
+﻿node_modules/
 lib/
 .npmrc
 *.log
+
+# Packaging artifacts and the scratch backups made while preparing this fork.
 *.tgz
+.backup-*/
+.backup-pack-*/
+.last-backup-path.txt
+.last-pack-backup.txt

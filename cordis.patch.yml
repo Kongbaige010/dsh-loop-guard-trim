@@ -1,4 +1,4 @@
-# The dsh-loop-guard bundle patch: the guard needs no
+# The dsh-loop-guard-trim bundle patch: the guard needs no
 # deployment-specific config to mount (its defaults detect reasoning-only steps
 # and steer on the second strike). Tune via a profile layer if desired:
 #
@@ -10,7 +10,12 @@
 #           similarityThreshold: 0.8
 #           escalate: steer
 #           cancelCause: thinking-loop
+#           trimRepeatedTail: true
+#
+# `name` must match this fork's package name. It was 'dsh-loop-guard' upstream;
+# pointing it at the original package here would mount the wrong build — the one
+# without tail trimming — while still reporting the plugin id `loop-guard`.
 
 - insert:
     - id: loop-guard
-      name: 'dsh-loop-guard'
+      name: '@kongbaige010/dsh-loop-guard-trim'

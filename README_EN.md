@@ -1,8 +1,30 @@
-# dsh-loop-guard — Thinking-Loop Guard for DSH
+﻿# dsh-loop-guard-trim — Thinking-Loop Guard for DSH (with tail trimming)
 
 > A thinking-loop guard for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH): breaks a model that degrades into a "thinking without doing" loop, so you no longer have to abort the turn by hand
 
 **🌏 [中文](README.md) | English**
+
+## About this fork
+
+This package is a modified version of
+[`dsh-loop-guard`](https://github.com/MrWeiCodes/dsh-loop-guard) by **argszero,
+MrWeiCodes and contributors**, used and redistributed under the **MIT License**.
+Every feature of the original is preserved; this fork only adds to it.
+
+Compared with the original, this fork adds:
+
+1. **Tail trimming** (`trimRepeatedTail`) — when a stream is cut short, the
+   repeated tail is removed from the block before it is committed, so the
+   degeneracy never enters the context at all.
+2. **Configurable notices** (`correctionTemplate` / `trimNoticeTemplate`) — the
+   correction and the trim notice can be written by the user.
+
+Installation and configuration are compatible with the original; only the
+package name differs (`@kongbaige010/dsh-loop-guard-trim`). See
+[CHANGELOG.md](CHANGELOG.md) for the full list of changes.
+
+> ⚠️ This fork is not affiliated with the original authors. Report issues here,
+> not to the upstream project.
 
 `dsh` · `dsh-plugin` · `plugin` · `guard` · `thinking-loop` · `reasoning` · `repetition` · `AI agent` · `思考循环` · `死循环` · `推理退化`
 
@@ -106,12 +128,12 @@ It is off by default because it re-enters the model without being asked, on a fa
 
 ### Option 1: Let the AI install it (simplest)
 
-Just give the repository URL to DSH's AI assistant, e.g. "install the plugin at https://github.com/MrWeiCodes/dsh-loop-guard". The AI handles the plugin loading, dependencies and patch; then restart `dsh web`.
+Just give the repository URL to DSH's AI assistant, e.g. "install the plugin at https://github.com/Kongbaige010/dsh-loop-guard-trim". The AI handles the plugin loading, dependencies and patch; then restart `dsh web`.
 
 ### Option 2: Install from GitHub
 
 ```powershell
-dsh plugin --profile web add -w github:MrWeiCodes/dsh-loop-guard
+dsh plugin --profile web add -w github:Kongbaige010/dsh-loop-guard-trim
 ```
 
 This installs the source, so `lib/` must be built locally — you **may need to allow the build script in the profile's `pnpm-workspace.yaml`** (pnpm 10 blocks dependency build scripts by default; paste the line it prints and re-run).
@@ -126,7 +148,7 @@ The fallback when pnpm is unavailable or you are offline:
    ```powershell
    # example: the web profile
    $dst = "$HOME\.dsh\profiles\web\packages\dsh-loop-guard"
-   git clone https://github.com/MrWeiCodes/dsh-loop-guard.git $dst
+   git clone https://github.com/Kongbaige010/dsh-loop-guard-trim.git $dst
    cd $dst
    npm install      # also builds lib/
    npm run build    # if the previous step did not produce lib/
@@ -143,12 +165,12 @@ The fallback when pnpm is unavailable or you are offline:
 - **Option 1 (AI install)**: just tell the AI "update the dsh-loop-guard plugin".
 - **Option 2 (GitHub)**: 
   ```powershell
-  dsh plugin --profile web add -w github:MrWeiCodes/dsh-loop-guard
+  dsh plugin --profile web add -w github:Kongbaige010/dsh-loop-guard-trim
   ```
   If the latest commit is not picked up (git dependencies are cached), remove and re-add:
   ```powershell
   dsh plugin --profile web remove dsh-loop-guard
-  dsh plugin --profile web add -w github:MrWeiCodes/dsh-loop-guard
+  dsh plugin --profile web add -w github:Kongbaige010/dsh-loop-guard-trim
   ```
   Then restart `dsh web`. **The commit hash changes after an update**; if pnpm asks for build approval again, redo the step from Option 2.
 - **Option 3 (manual)**:
